@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["ExpoYookassaModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.yookassa.ExpoYookassaModule"]
+  }
+}
