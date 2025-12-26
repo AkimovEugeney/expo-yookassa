@@ -1,9 +1,17 @@
 {
   "name": "expo-yookassa",
   "version": "0.1.0",
-  "description": "My new module",
+  "description": "YooKassa SDK integration for Expo with subscription support",
   "main": "build/index.js",
   "types": "build/index.d.ts",
+  "files": [
+    "build",
+    "src",
+    "ios",
+    "android",
+    "expo-module.config.json",
+    "README.md"
+  ],
   "scripts": {
     "build": "expo-module build",
     "clean": "expo-module clean",
@@ -37,6 +45,7 @@
   },
   "peerDependencies": {
     "expo": "*",
+    "expo-secure-store": "*",
     "react": "*",
     "react-native": "*"
   }

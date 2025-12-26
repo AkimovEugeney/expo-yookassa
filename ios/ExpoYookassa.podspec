@@ -4,11 +4,11 @@ package = JSON.parse(File.read(File.join(__dir__, '..', 'package.json')))
 
 Pod::Spec.new do |s|
   s.name           = 'ExpoYookassa'
-  s.version        = package['version']
-  s.summary        = package['description']
-  s.description    = package['description']
-  s.license        = package['license']
-  s.author         = package['author']
+  s.version      = "1.0.0"
+  s.summary      = "YooKassa SDK integration for Expo"
+  s.homepage     = "https://github.com/AkimovEugeney/expo-yookassa"
+  s.license      = "MIT"
+  s.author       = { "author" => "akimoveugeney@gmail.com" }
   s.homepage       = package['homepage']
   s.platforms      = {
     :ios => '15.1',
@@ -19,6 +19,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'ExpoModulesCore'
+  s.dependency 'YooKassaPayments', '~> 6.0'
 
   # Swift/Objective-C compatibility
   s.pod_target_xcconfig = {

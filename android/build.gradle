@@ -31,6 +31,11 @@ if (useManagedAndroidSdkVersions) {
   }
 }
 
+dependencies {
+    implementation 'ru.yoomoney.sdk:kassa-payments:6.4.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
+
 android {
   namespace "expo.modules.yookassa"
   defaultConfig {
