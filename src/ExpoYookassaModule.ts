@@ -1,84 +1,30 @@
-import { requireNativeModule, EventEmitter } from 'expo-modules-core';
-import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+import { EventEmitter, requireNativeModule } from 'expo-modules-core'
 
-// Типы для TypeScript
-export type PaymentMethodType = 
-  | 'BANK_CARD'
-  | 'SBERBANK'
-  | 'YOO_MONEY'
-  | 'APPLE_PAY'
-  | 'GOOGLE_PAY';
+import { Platform } from 'react-native'
+import type {
+  ExpoYookassaEventSubscription,
+  ExpoYookassaModuleEvents,
+  LocalSubscriptionData,
+  PaymentError,
+  SubscriptionInfo,
+  SubscriptionStatus,
+  TokenizationParams,
+  TokenizationResult,
+} from './ExpoYookassa.types'
 
-export interface PaymentToken {
-  token: string;
-  type: PaymentMethodType;
-  paymentMethodId?: string;
-}
-
-export interface PaymentError {
-  code: string;
-  message: string;
-  details?: any;
-}
-
-export interface TokenizationParams {
-  clientId: string;
-  shopId: string;
-  amount: number;
-  currency?: string;
-  title: string;
-  subtitle?: string;
-  savePaymentMethod?: 'ON' | 'OFF' | 'USER_SELECTS';
-  paymentMethodTypes?: Array<'BANK_CARD' | 'SBERBANK' | 'YOO_MONEY'>;
-  returnUrl?: string;
-  gatewayId?: string;
-  // Параметры для подписок
-  isRecurring?: boolean;
-  subscriptionId?: string;
-  // Параметры для тестового режима
-  testMode?: boolean;
-  // ID пользователя (если пользователь авторизован)
-  userId?: string;
-}
-
-export interface TokenizationResult {
-  token: string;
-  type: string;
-  paymentMethodId?: string;
-  paymentId?: string;
-  subscriptionId?: string;
-}
-
-export interface SubscriptionInfo {
-  subscriptionId: string;
-  paymentId: string;
-  isActive: boolean;
-  expiresAt?: number;
-  autoRenewalEnabled: boolean;
-  lastServerCheck?: number; // Timestamp последней успешной проверки на сервере
-  serverSignature?: string; // Подпись данных от сервера для защиты от взлома
-}
-
-export interface LocalSubscriptionData {
-  subscriptionId: string;
-  expiresAt: number;
-  lastServerCheck: number;
-  serverSignature?: string; // Подпись от сервера
-  gracePeriodDays?: number; // Максимальное количество дней без проверки сервера
-}
-
-export interface SubscriptionStatus {
-  isActive: boolean;
-  subscriptionId?: string;
-  expiresAt?: number;
-  autoRenewalEnabled?: boolean;
+let SecureStore: typeof import('expo-secure-store');
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  SecureStore = require('expo-secure-store');
+} catch (error) {
+  SecureStore = undefined as unknown as typeof import('expo-secure-store');
 }
 
 // Интерфейс нативного модуля
 interface NativeExpoYookassaModule {
   initialize(clientId: string, shopId: string): Promise<void>;
   startTokenization(params: any): Promise<TokenizationResult>;
+
   // Методы для подписок
   startSubscription?(params: any): Promise<TokenizationResult>;
   cancelSubscription?(subscriptionId: string): Promise<boolean>;
@@ -91,7 +37,7 @@ interface NativeExpoYookassaModule {
 
 // Получаем нативный модуль
 const nativeModule = requireNativeModule<NativeExpoYookassaModule>('ExpoYookassa');
-const emitter = new EventEmitter(nativeModule);
+const emitter = new EventEmitter<ExpoYookassaModuleEvents>(nativeModule as any);
 
 /**
  * Основной класс модуля YooKassa
@@ -555,36 +501,24 @@ class ExpoYookassa {
   /**
    * Событие успешной токенизации
    */
-  addOnTokenizationSuccessListener(listener: (result: TokenizationResult) => void) {
+  addOnTokenizationSuccessListener(listener: (result: TokenizationResult) => void): ExpoYookassaEventSubscription {
     return emitter.addListener('onTokenizationSuccess', listener);
   }
 
   /**
    * Событие ошибки токенизации
    */
-  addOnTokenizationErrorListener(listener: (error: PaymentError) => void) {
+  addOnTokenizationErrorListener(listener: (error: PaymentError) => void): ExpoYookassaEventSubscription {
     return emitter.addListener('onTokenizationError', listener);
   }
 
   /**
    * Событие отмены платежа
    */
-  addOnTokenizationCancelListener(listener: () => void) {
+  addOnTokenizationCancelListener(listener: () => void): ExpoYookassaEventSubscription {
     return emitter.addListener('onTokenizationCancel', listener);
   }
 }
 
 // Экспортируем инстанс класса
 export default new ExpoYookassa();
-
-// Экспортируем типы
-export type {
-  PaymentToken,
-  PaymentError,
-  TokenizationParams,
-  TokenizationResult,
-  PaymentMethodType,
-  SubscriptionInfo,
-  SubscriptionStatus,
-  LocalSubscriptionData,
-};
