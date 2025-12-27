@@ -144,10 +144,6 @@ class ExpoYookassaModule : Module() {
                                 resultMap["subscriptionId"] = it
                             }
 
-                            result.paymentMethodId?.let {
-                                resultMap["paymentMethodId"] = it
-                            }
-
                             tokenizationPromise?.resolve(resultMap)
                         } else {
                             tokenizationPromise?.reject(
