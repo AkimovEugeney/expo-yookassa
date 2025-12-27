@@ -9,7 +9,7 @@ import ru.yoomoney.sdk.kassa.payments.checkoutParameters.Amount
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.PaymentMethodType
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.PaymentParameters
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.SavePaymentMethod
-import ru.yoomoney.sdk.kassa.payments.utils.getAllPaymentMethods
+
 import java.math.BigDecimal
 import java.util.Currency
 
@@ -152,7 +152,8 @@ class ExpoYookassaModule : Module() {
                         } else {
                             tokenizationPromise?.reject(
                                 "TOKENIZATION_FAILED",
-                                "Empty tokenization result"
+                                "Empty tokenization result",
+                                null
                             )
                         }
                     }
@@ -160,14 +161,16 @@ class ExpoYookassaModule : Module() {
                     Activity.RESULT_CANCELED -> {
                         tokenizationPromise?.reject(
                             "TOKENIZATION_CANCELED",
-                            "User canceled"
+                            "User canceled",
+                            null
                         )
                     }
 
                     else -> {
                         tokenizationPromise?.reject(
                             "TOKENIZATION_FAILED",
-                            "Unexpected result code $resultCode"
+                            "Unexpected result code $resultCode",
+                            null
                         )
                     }
                 }
@@ -202,6 +205,6 @@ class ExpoYookassaModule : Module() {
             }
         }?.toSet()
 
-        return mapped.takeUnless { it.isNullOrEmpty() } ?: getAllPaymentMethods()
+        return mapped.takeUnless { it.isNullOrEmpty() } ?: enumValues<PaymentMethodType>().toSet()
     }
 }
