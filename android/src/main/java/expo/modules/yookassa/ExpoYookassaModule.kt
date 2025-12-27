@@ -5,10 +5,11 @@ import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import ru.yoomoney.sdk.kassa.payments.Checkout
-import ru.yoomoney.sdk.kassa.payments.SavePaymentMethod
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.Amount
+import ru.yoomoney.sdk.kassa.payments.checkoutParameters.PaymentMethodType
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.PaymentParameters
-import ru.yoomoney.sdk.kassa.payments.model.PaymentMethodType
+import ru.yoomoney.sdk.kassa.payments.checkoutParameters.SavePaymentMethod
+import ru.yoomoney.sdk.kassa.payments.utils.getAllPaymentMethods
 import java.math.BigDecimal
 import java.util.Currency
 
@@ -19,14 +20,8 @@ class ExpoYookassaModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("ExpoYookassa")
         
-        // Инициализация SDK
-        Function("initialize") { clientId: String, shopId: String ->
-            Checkout.initialize(
-                appContext.reactContext?.applicationContext!!,
-                clientId,
-                shopId
-            )
-        }
+        // Инициализация SDK (для Android 8.x не требуется отдельный вызов)
+        Function("initialize") { _: String, _: String -> }
         
         // Запуск токенизации
         AsyncFunction("startTokenization") { 
@@ -64,8 +59,7 @@ class ExpoYookassaModule : Module() {
                 customReturnUrl = params["returnUrl"] as? String,
                 userPhoneNumber = params["userPhoneNumber"] as? String,
                 authCenterClientId = params["authCenterClientId"] as? String,
-                customerId = params["customerId"] as? String,
-                googlePayParameters = null
+                customerId = params["customerId"] as? String
             )
 
             Checkout.createTokenizeIntent(activity, paymentParameters).let {
@@ -107,8 +101,7 @@ class ExpoYookassaModule : Module() {
                 customReturnUrl = params["returnUrl"] as? String,
                 userPhoneNumber = params["userPhoneNumber"] as? String,
                 authCenterClientId = params["authCenterClientId"] as? String,
-                customerId = params["customerId"] as? String,
-                googlePayParameters = null
+                customerId = params["customerId"] as? String
             )
 
             Checkout.createTokenizeIntent(activity, paymentParameters).let {
@@ -159,8 +152,7 @@ class ExpoYookassaModule : Module() {
                         } else {
                             tokenizationPromise?.reject(
                                 "TOKENIZATION_FAILED",
-                                "Empty tokenization result",
-                                null
+                                "Empty tokenization result"
                             )
                         }
                     }
@@ -168,16 +160,14 @@ class ExpoYookassaModule : Module() {
                     Activity.RESULT_CANCELED -> {
                         tokenizationPromise?.reject(
                             "TOKENIZATION_CANCELED",
-                            "User canceled",
-                            null
+                            "User canceled"
                         )
                     }
 
                     else -> {
                         tokenizationPromise?.reject(
                             "TOKENIZATION_FAILED",
-                            "Unexpected result code $resultCode",
-                            null
+                            "Unexpected result code $resultCode"
                         )
                     }
                 }
@@ -197,25 +187,21 @@ class ExpoYookassaModule : Module() {
 
         return when {
             params["isRecurring"] == true -> SavePaymentMethod.ON
-            savePaymentMethod.equals("ON", ignoreCase = true) -> SavePaymentMethod.ON
-            savePaymentMethod.equals("USER_SELECTS", ignoreCase = true) -> SavePaymentMethod.USER_SELECTS
+            savePaymentMethod?.equals("ON", ignoreCase = true) == true -> SavePaymentMethod.ON
+            savePaymentMethod?.equals("USER_SELECTS", ignoreCase = true) == true -> SavePaymentMethod.USER_SELECTS
             else -> SavePaymentMethod.OFF
         }
     }
 
-    private fun resolvePaymentMethodTypes(params: Map<String, Any>): Set<PaymentMethodType>? {
+    private fun resolvePaymentMethodTypes(params: Map<String, Any>): Set<PaymentMethodType> {
         val provided = params["paymentMethodTypes"] as? List<*>
 
-        if (provided.isNullOrEmpty()) {
-            return null
-        }
-
-        val mapped = provided.mapNotNull { value ->
+        val mapped = provided?.mapNotNull { value ->
             (value as? String)?.let { methodName ->
                 runCatching { PaymentMethodType.valueOf(methodName.uppercase()) }.getOrNull()
             }
-        }.toSet()
+        }?.toSet()
 
-        return mapped.takeIf { it.isNotEmpty() }
+        return mapped.takeUnless { it.isNullOrEmpty() } ?: getAllPaymentMethods()
     }
 }
