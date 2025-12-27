@@ -1,13 +1,14 @@
 package com.expo.yookassa
 
 import android.app.Activity
-import android.content.Intent
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import expo.modules.kotlin.Promise
 import ru.yoomoney.sdk.kassa.payments.Checkout
+import ru.yoomoney.sdk.kassa.payments.SavePaymentMethod
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.Amount
 import ru.yoomoney.sdk.kassa.payments.checkoutParameters.PaymentParameters
+import ru.yoomoney.sdk.kassa.payments.model.PaymentMethodType
 import java.math.BigDecimal
 import java.util.Currency
 
@@ -34,39 +35,39 @@ class ExpoYookassaModule : Module() {
         ->
             tokenizationPromise = promise
             val activity = appContext.currentActivity ?: return@AsyncFunction
-            
+
             // Сохраняем subscriptionId если есть
             currentSubscriptionId = params["subscriptionId"] as? String
-            
+
             val amount = Amount(
                 BigDecimal(params["amount"].toString()),
                 Currency.getInstance(params["currency"] as String? ?: "RUB")
             )
-            
+
             // Определяем, нужно ли сохранять платежный метод
-            val savePaymentMethod = when {
-                params["isRecurring"] == true -> PaymentParameters.SavePaymentMethod.ON
-                params["savePaymentMethod"] == "ON" -> PaymentParameters.SavePaymentMethod.ON
-                params["savePaymentMethod"] == "USER_SELECTS" -> PaymentParameters.SavePaymentMethod.USER_SELECTS
-                else -> PaymentParameters.SavePaymentMethod.OFF
-            }
-            
+            val savePaymentMethod = resolveSavePaymentMethod(params)
+
+            val paymentMethodTypes = resolvePaymentMethodTypes(params)
+
+            val clientApplicationKey = (params["clientApplicationKey"] ?: params["clientId"]) as? String
+                ?: throw IllegalArgumentException("clientId (clientApplicationKey) is required")
+
             val paymentParameters = PaymentParameters(
                 amount = amount,
                 title = params["title"] as String? ?: "Order",
                 subtitle = params["subtitle"] as String? ?: "",
-                clientId = params["clientId"] as String,
+                clientApplicationKey = clientApplicationKey,
                 shopId = params["shopId"] as String,
                 savePaymentMethod = savePaymentMethod,
-                paymentMethodTypes = setOf(
-                    PaymentParameters.PaymentMethodType.BANK_CARD,
-                    PaymentParameters.PaymentMethodType.SBERBANK,
-                    PaymentParameters.PaymentMethodType.YOO_MONEY
-                ),
+                paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
-                customReturnUrl = params["returnUrl"] as? String
+                customReturnUrl = params["returnUrl"] as? String,
+                userPhoneNumber = params["userPhoneNumber"] as? String,
+                authCenterClientId = params["authCenterClientId"] as? String,
+                customerId = params["customerId"] as? String,
+                googlePayParameters = null
             )
-            
+
             Checkout.createTokenizeIntent(activity, paymentParameters).let {
                 activity.startActivityForResult(it, REQUEST_CODE_TOKENIZE)
             }
@@ -79,32 +80,37 @@ class ExpoYookassaModule : Module() {
         ->
             tokenizationPromise = promise
             val activity = appContext.currentActivity ?: return@AsyncFunction
-            
+
             // Сохраняем subscriptionId если есть
             currentSubscriptionId = params["subscriptionId"] as? String
-            
+
             val amount = Amount(
                 BigDecimal(params["amount"].toString()),
                 Currency.getInstance(params["currency"] as String? ?: "RUB")
             )
-            
+
             // Для подписок всегда сохраняем платежный метод
+            val clientApplicationKey = (params["clientApplicationKey"] ?: params["clientId"]) as? String
+                ?: throw IllegalArgumentException("clientId (clientApplicationKey) is required")
+
+            val paymentMethodTypes = resolvePaymentMethodTypes(params)
+
             val paymentParameters = PaymentParameters(
                 amount = amount,
                 title = params["title"] as String? ?: "Order",
                 subtitle = params["subtitle"] as String? ?: "",
-                clientId = params["clientId"] as String,
+                clientApplicationKey = clientApplicationKey,
                 shopId = params["shopId"] as String,
-                savePaymentMethod = PaymentParameters.SavePaymentMethod.ON,
-                paymentMethodTypes = setOf(
-                    PaymentParameters.PaymentMethodType.BANK_CARD,
-                    PaymentParameters.PaymentMethodType.SBERBANK,
-                    PaymentParameters.PaymentMethodType.YOO_MONEY
-                ),
+                savePaymentMethod = SavePaymentMethod.ON,
+                paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
-                customReturnUrl = params["returnUrl"] as? String
+                customReturnUrl = params["returnUrl"] as? String,
+                userPhoneNumber = params["userPhoneNumber"] as? String,
+                authCenterClientId = params["authCenterClientId"] as? String,
+                customerId = params["customerId"] as? String,
+                googlePayParameters = null
             )
-            
+
             Checkout.createTokenizeIntent(activity, paymentParameters).let {
                 activity.startActivityForResult(it, REQUEST_CODE_TOKENIZE)
             }
@@ -130,42 +136,52 @@ class ExpoYookassaModule : Module() {
         }
         
         // Обработка результата активности
-        OnActivityResult { event ->
-            if (event.requestCode == REQUEST_CODE_TOKENIZE) {
-                Checkout.createTokenizationResult(event.intent)?.let { result ->
-                    when (result) {
-                        is Checkout.TokenizationResult.Success -> {
+        OnActivityResult { _, (requestCode, resultCode, data) ->
+            if (requestCode == REQUEST_CODE_TOKENIZE) {
+                when (resultCode) {
+                    Activity.RESULT_OK -> {
+                        val result = data?.let { Checkout.createTokenizationResult(it) }
+                        if (result != null) {
                             val resultMap = mutableMapOf<String, Any>(
                                 "token" to result.paymentToken,
                                 "type" to result.paymentMethodType.name
                             )
-                            
-                            // Добавляем subscriptionId если есть
+
                             currentSubscriptionId?.let {
                                 resultMap["subscriptionId"] = it
                             }
-                            
-                            // Добавляем paymentMethodId если доступен
+
                             result.paymentMethodId?.let {
                                 resultMap["paymentMethodId"] = it
                             }
-                            
+
                             tokenizationPromise?.resolve(resultMap)
-                        }
-                        is Checkout.TokenizationResult.Failed -> {
+                        } else {
                             tokenizationPromise?.reject(
                                 "TOKENIZATION_FAILED",
-                                result.error.message
-                            )
-                        }
-                        is Checkout.TokenizationResult.Canceled -> {
-                            tokenizationPromise?.reject(
-                                "TOKENIZATION_CANCELED",
-                                "User canceled"
+                                "Empty tokenization result",
+                                null
                             )
                         }
                     }
+
+                    Activity.RESULT_CANCELED -> {
+                        tokenizationPromise?.reject(
+                            "TOKENIZATION_CANCELED",
+                            "User canceled",
+                            null
+                        )
+                    }
+
+                    else -> {
+                        tokenizationPromise?.reject(
+                            "TOKENIZATION_FAILED",
+                            "Unexpected result code $resultCode",
+                            null
+                        )
+                    }
                 }
+
                 tokenizationPromise = null
                 currentSubscriptionId = null
             }
@@ -174,5 +190,32 @@ class ExpoYookassaModule : Module() {
     
     companion object {
         private const val REQUEST_CODE_TOKENIZE = 1001
+    }
+
+    private fun resolveSavePaymentMethod(params: Map<String, Any>): SavePaymentMethod {
+        val savePaymentMethod = params["savePaymentMethod"] as? String
+
+        return when {
+            params["isRecurring"] == true -> SavePaymentMethod.ON
+            savePaymentMethod.equals("ON", ignoreCase = true) -> SavePaymentMethod.ON
+            savePaymentMethod.equals("USER_SELECTS", ignoreCase = true) -> SavePaymentMethod.USER_SELECTS
+            else -> SavePaymentMethod.OFF
+        }
+    }
+
+    private fun resolvePaymentMethodTypes(params: Map<String, Any>): Set<PaymentMethodType>? {
+        val provided = params["paymentMethodTypes"] as? List<*>
+
+        if (provided.isNullOrEmpty()) {
+            return null
+        }
+
+        val mapped = provided.mapNotNull { value ->
+            (value as? String)?.let { methodName ->
+                runCatching { PaymentMethodType.valueOf(methodName.uppercase()) }.getOrNull()
+            }
+        }.toSet()
+
+        return mapped.takeIf { it.isNotEmpty() }
     }
 }
