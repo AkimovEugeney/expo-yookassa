@@ -3,6 +3,7 @@ import type { StyleProp, ViewStyle } from 'react-native'
 export type PaymentMethodType =
   | 'BANK_CARD'
   | 'SBERBANK'
+  | 'SBP'
   | 'YOO_MONEY'
   | 'APPLE_PAY'
   | 'GOOGLE_PAY';
@@ -27,7 +28,7 @@ export interface TokenizationParams {
   title: string;
   subtitle?: string;
   savePaymentMethod?: 'ON' | 'OFF' | 'USER_SELECTS';
-  paymentMethodTypes?: Array<'BANK_CARD' | 'SBERBANK' | 'YOO_MONEY'>;
+  paymentMethodTypes?: Array<'BANK_CARD' | 'SBERBANK' | 'SBP' | 'YOO_MONEY'>;
   returnUrl?: string;
   gatewayId?: string;
   /** Параметры для подписок */

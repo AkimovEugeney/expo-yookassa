@@ -1,4 +1,4 @@
-package com.expo.yookassa
+package expo.modules.yookassa
 
 import android.app.Activity
 import expo.modules.kotlin.Promise
@@ -16,12 +16,17 @@ import java.util.Currency
 class ExpoYookassaModule : Module() {
     private var tokenizationPromise: Promise? = null
     private var currentSubscriptionId: String? = null
+    private var defaultClientApplicationKey: String? = null
+    private var defaultShopId: String? = null
     
     override fun definition() = ModuleDefinition {
         Name("ExpoYookassa")
         
-        // Инициализация SDK (для Android 8.x не требуется отдельный вызов)
-        Function("initialize") { _: String, _: String -> }
+        // Инициализация SDK (сохраняем значения по умолчанию для последующих вызовов)
+        Function("initialize") { clientId: String, shopId: String ->
+            defaultClientApplicationKey = clientId
+            defaultShopId = shopId
+        }
         
         // Запуск токенизации
         AsyncFunction("startTokenization") { 
@@ -44,15 +49,25 @@ class ExpoYookassaModule : Module() {
 
             val paymentMethodTypes = resolvePaymentMethodTypes(params)
 
-            val clientApplicationKey = (params["clientApplicationKey"] ?: params["clientId"]) as? String
+            val clientApplicationKey = listOf(
+                params["clientApplicationKey"],
+                params["clientId"],
+                defaultClientApplicationKey
+            ).firstNotNullOfOrNull { it as? String }
                 ?: throw IllegalArgumentException("clientId (clientApplicationKey) is required")
+
+            val shopId = listOf(
+                params["shopId"],
+                defaultShopId
+            ).firstNotNullOfOrNull { it as? String }
+                ?: throw IllegalArgumentException("shopId is required")
 
             val paymentParameters = PaymentParameters(
                 amount = amount,
                 title = params["title"] as String? ?: "Order",
                 subtitle = params["subtitle"] as String? ?: "",
                 clientApplicationKey = clientApplicationKey,
-                shopId = params["shopId"] as String,
+                shopId = shopId,
                 savePaymentMethod = savePaymentMethod,
                 paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
@@ -84,8 +99,18 @@ class ExpoYookassaModule : Module() {
             )
 
             // Для подписок всегда сохраняем платежный метод
-            val clientApplicationKey = (params["clientApplicationKey"] ?: params["clientId"]) as? String
+            val clientApplicationKey = listOf(
+                params["clientApplicationKey"],
+                params["clientId"],
+                defaultClientApplicationKey
+            ).firstNotNullOfOrNull { it as? String }
                 ?: throw IllegalArgumentException("clientId (clientApplicationKey) is required")
+
+            val shopId = listOf(
+                params["shopId"],
+                defaultShopId
+            ).firstNotNullOfOrNull { it as? String }
+                ?: throw IllegalArgumentException("shopId is required")
 
             val paymentMethodTypes = resolvePaymentMethodTypes(params)
 
@@ -94,7 +119,7 @@ class ExpoYookassaModule : Module() {
                 title = params["title"] as String? ?: "Order",
                 subtitle = params["subtitle"] as String? ?: "",
                 clientApplicationKey = clientApplicationKey,
-                shopId = params["shopId"] as String,
+                shopId = shopId,
                 savePaymentMethod = SavePaymentMethod.ON,
                 paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
@@ -201,6 +226,12 @@ class ExpoYookassaModule : Module() {
             }
         }?.toSet()
 
-        return mapped.takeUnless { it.isNullOrEmpty() } ?: enumValues<PaymentMethodType>().toSet()
+        val defaultMethods = setOf(
+            PaymentMethodType.BANK_CARD,
+            PaymentMethodType.SBERBANK,
+            PaymentMethodType.SBP
+        )
+
+        return mapped.takeUnless { it.isNullOrEmpty() } ?: defaultMethods
     }
 }

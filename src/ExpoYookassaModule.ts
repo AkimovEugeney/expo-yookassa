@@ -71,7 +71,7 @@ class ExpoYookassa {
         ...params,
         currency: params.currency || 'RUB',
         savePaymentMethod: params.savePaymentMethod || 'OFF',
-        paymentMethodTypes: params.paymentMethodTypes || ['BANK_CARD', 'SBERBANK'],
+        paymentMethodTypes: params.paymentMethodTypes || ['BANK_CARD', 'SBERBANK', 'SBP'],
         testMode: params.testMode ?? false,
       });
       
