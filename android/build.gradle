@@ -31,8 +31,13 @@ if (useManagedAndroidSdkVersions) {
   }
 }
 
+repositories {
+    mavenCentral()
+    maven { url 'https://developer.huawei.com/repo/' }
+}
+
 dependencies {
-    implementation 'ru.yoomoney.sdk:kassa-payments:6.4.0'
+    implementation 'ru.yoomoney.sdk.kassa.payments:yookassa-android-sdk:8.2.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
 }
 
