@@ -1,6 +1,8 @@
 package expo.modules.yookassa
 
 import android.app.Activity
+import android.util.Log
+
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -26,6 +28,10 @@ class ExpoYookassaModule : Module() {
         Function("initialize") { clientId: String, shopId: String ->
             defaultClientApplicationKey = clientId
             defaultShopId = shopId
+            Log.d(
+                TAG,
+                "Initialized defaults clientId=${mask(clientId)} shopId=${mask(shopId)}"
+            )
         }
         
         // Запуск токенизации
@@ -48,6 +54,7 @@ class ExpoYookassaModule : Module() {
             val savePaymentMethod = resolveSavePaymentMethod(params)
 
             val paymentMethodTypes = resolvePaymentMethodTypes(params)
+            val resolvedReturnUrl = resolveReturnUrl(params)
 
             val clientApplicationKey = listOf(
                 params["clientApplicationKey"],
@@ -62,6 +69,14 @@ class ExpoYookassaModule : Module() {
             ).firstNotNullOfOrNull { it as? String }
                 ?: throw IllegalArgumentException("shopId is required")
 
+            Log.d(
+                TAG,
+                "startTokenization amount=${amount.value} currency=${amount.currency.currencyCode} " +
+                    "savePaymentMethod=$savePaymentMethod paymentMethods=${paymentMethodTypes.joinToString()} " +
+                    "returnUrl=${resolvedReturnUrl ?: "null"} clientKeyDefault=${defaultClientApplicationKey != null} " +
+                    "shopIdDefault=${defaultShopId != null}"
+            )
+
             val paymentParameters = PaymentParameters(
                 amount = amount,
                 title = params["title"] as String? ?: "Order",
@@ -71,7 +86,7 @@ class ExpoYookassaModule : Module() {
                 savePaymentMethod = savePaymentMethod,
                 paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
-                customReturnUrl = params["returnUrl"] as? String,
+                customReturnUrl = resolvedReturnUrl,
                 userPhoneNumber = params["userPhoneNumber"] as? String,
                 authCenterClientId = params["authCenterClientId"] as? String,
                 customerId = params["customerId"] as? String
@@ -113,6 +128,7 @@ class ExpoYookassaModule : Module() {
                 ?: throw IllegalArgumentException("shopId is required")
 
             val paymentMethodTypes = resolvePaymentMethodTypes(params)
+            val resolvedReturnUrl = resolveReturnUrl(params)
 
             val paymentParameters = PaymentParameters(
                 amount = amount,
@@ -123,7 +139,7 @@ class ExpoYookassaModule : Module() {
                 savePaymentMethod = SavePaymentMethod.ON,
                 paymentMethodTypes = paymentMethodTypes,
                 gatewayId = params["gatewayId"] as? String,
-                customReturnUrl = params["returnUrl"] as? String,
+                customReturnUrl = resolvedReturnUrl,
                 userPhoneNumber = params["userPhoneNumber"] as? String,
                 authCenterClientId = params["authCenterClientId"] as? String,
                 customerId = params["customerId"] as? String
@@ -169,8 +185,14 @@ class ExpoYookassaModule : Module() {
                                 resultMap["subscriptionId"] = it
                             }
 
+                            Log.d(
+                                TAG,
+                                "Tokenization success type=${result.paymentMethodType.name} subscription=${currentSubscriptionId}"
+                            )
+
                             tokenizationPromise?.resolve(resultMap)
                         } else {
+                            Log.e(TAG, "Tokenization returned empty result")
                             tokenizationPromise?.reject(
                                 "TOKENIZATION_FAILED",
                                 "Empty tokenization result",
@@ -180,6 +202,7 @@ class ExpoYookassaModule : Module() {
                     }
 
                     Activity.RESULT_CANCELED -> {
+                        Log.w(TAG, "Tokenization canceled by user")
                         tokenizationPromise?.reject(
                             "TOKENIZATION_CANCELED",
                             "User canceled",
@@ -188,6 +211,7 @@ class ExpoYookassaModule : Module() {
                     }
 
                     else -> {
+                        Log.e(TAG, "Tokenization failed with resultCode=$resultCode")
                         tokenizationPromise?.reject(
                             "TOKENIZATION_FAILED",
                             "Unexpected result code $resultCode",
@@ -202,19 +226,22 @@ class ExpoYookassaModule : Module() {
         }
     }
     
-    companion object {
-        private const val REQUEST_CODE_TOKENIZE = 1001
-    }
-
     private fun resolveSavePaymentMethod(params: Map<String, Any>): SavePaymentMethod {
         val savePaymentMethod = params["savePaymentMethod"] as? String
 
-        return when {
+        val resolved = when {
             params["isRecurring"] == true -> SavePaymentMethod.ON
             savePaymentMethod?.equals("ON", ignoreCase = true) == true -> SavePaymentMethod.ON
             savePaymentMethod?.equals("USER_SELECTS", ignoreCase = true) == true -> SavePaymentMethod.USER_SELECTS
             else -> SavePaymentMethod.OFF
         }
+
+        Log.d(
+            TAG,
+            "resolveSavePaymentMethod -> $resolved (requested=$savePaymentMethod isRecurring=${params["isRecurring"]})"
+        )
+
+        return resolved
     }
 
     private fun resolvePaymentMethodTypes(params: Map<String, Any>): Set<PaymentMethodType> {
@@ -232,6 +259,73 @@ class ExpoYookassaModule : Module() {
             PaymentMethodType.SBP
         )
 
-        return mapped.takeUnless { it.isNullOrEmpty() } ?: defaultMethods
+        return mapped.takeUnless { it.isNullOrEmpty() }?.also {
+            Log.d(TAG, "Using provided payment methods=${it.joinToString()}")
+        } ?: run {
+            if (provided != null && provided.isNotEmpty()) {
+                Log.w(
+                    TAG,
+                    "Failed to map provided paymentMethodTypes=$provided. Falling back to default=${defaultMethods.joinToString()}"
+                )
+            } else {
+                Log.d(
+                    TAG,
+                    "paymentMethodTypes not provided. Using default=${defaultMethods.joinToString()}"
+                )
+            }
+            defaultMethods
+        }
+    }
+
+    private fun resolveReturnUrl(params: Map<String, Any>): String? {
+        val explicit = (params["returnUrl"] as? String)?.takeIf { it.isNotBlank() }
+        if (!explicit.isNullOrEmpty()) {
+            Log.d(TAG, "Using explicit returnUrl=$explicit")
+            return explicit
+        }
+
+        val scheme = getAppScheme()
+        val fallback = scheme?.let { "$it://$DEFAULT_RETURN_PATH" }
+
+        if (fallback != null) {
+            Log.d(TAG, "Generated fallback returnUrl=$fallback from ym_app_scheme=$scheme")
+        } else {
+            Log.w(
+                TAG,
+                "No returnUrl provided and ym_app_scheme not configured. Tokenization will proceed without customReturnUrl"
+            )
+        }
+
+        return fallback
+    }
+
+    private fun getAppScheme(): String? {
+        val context = appContext.reactContext
+        if (context == null) {
+            Log.w(TAG, "React context is null, cannot resolve ym_app_scheme")
+            return null
+        }
+
+        val resId = context.resources.getIdentifier("ym_app_scheme", "string", context.packageName)
+        if (resId == 0) {
+            Log.w(
+                TAG,
+                "Resource ym_app_scheme not found. Configure it via resValue or strings.xml as documented."
+            )
+            return null
+        }
+
+        return context.getString(resId)
+    }
+
+    companion object {
+        private const val TAG = "ExpoYookassaModule"
+        private const val REQUEST_CODE_TOKENIZE = 1001
+        private const val DEFAULT_RETURN_PATH = "yookassa"
+
+        private fun mask(value: String?): String {
+            if (value.isNullOrEmpty()) return "<empty>"
+            return if (value.length <= 4) "****" else value.take(4) + "****"
+        }
     }
 }
