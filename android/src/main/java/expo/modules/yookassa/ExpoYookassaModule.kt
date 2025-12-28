@@ -1,6 +1,7 @@
 package expo.modules.yookassa
 
 import android.app.Activity
+import android.net.Uri
 import android.util.Log
 
 import expo.modules.kotlin.Promise
@@ -280,26 +281,29 @@ class ExpoYookassaModule : Module() {
     private fun resolveReturnUrl(params: Map<String, Any>): String? {
         val explicit = (params["returnUrl"] as? String)?.takeIf { it.isNotBlank() }
         if (!explicit.isNullOrEmpty()) {
-            Log.d(TAG, "Using explicit returnUrl=$explicit")
-            return explicit
+            return if (isValidHttpsUrl(explicit)) {
+                Log.d(TAG, "Using explicit returnUrl=$explicit")
+                explicit
+            } else {
+                Log.e(TAG, "Ignoring invalid returnUrl=$explicit. Only https URLs are accepted by YooKassa SDK.")
+                null
+            }
         }
 
-        val scheme = getAppScheme()
-        val fallback = scheme?.let { "$it://$DEFAULT_RETURN_PATH" }
-
-        if (fallback != null) {
-            Log.d(TAG, "Generated fallback returnUrl=$fallback from ym_app_scheme=$scheme")
-        } else {
-            Log.w(
-                TAG,
-                "No returnUrl provided and ym_app_scheme not configured. Tokenization will proceed without customReturnUrl"
-            )
+        val configured = getConfiguredReturnUrl()
+        if (configured != null) {
+            Log.d(TAG, "Using returnUrl from ym_app_scheme resource=$configured")
+            return configured
         }
 
-        return fallback
+        Log.w(
+            TAG,
+            "No returnUrl provided and ym_app_scheme missing or invalid. Tokenization will proceed without customReturnUrl"
+        )
+        return null
     }
 
-    private fun getAppScheme(): String? {
+    private fun getConfiguredReturnUrl(): String? {
         val context = appContext.reactContext
         if (context == null) {
             Log.w(TAG, "React context is null, cannot resolve ym_app_scheme")
@@ -315,13 +319,31 @@ class ExpoYookassaModule : Module() {
             return null
         }
 
-        return context.getString(resId)
+        val configured = context.getString(resId).trim()
+        if (configured.isEmpty()) {
+            Log.w(TAG, "ym_app_scheme resource is empty. Ignoring.")
+            return null
+        }
+
+        if (!isValidHttpsUrl(configured)) {
+            Log.e(
+                TAG,
+                "ym_app_scheme must contain a valid https URL. Current value=$configured. Ignoring."
+            )
+            return null
+        }
+
+        return configured
+    }
+
+    private fun isValidHttpsUrl(url: String): Boolean {
+        val parsed = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        return parsed.scheme.equals("https", ignoreCase = true) && !parsed.host.isNullOrEmpty()
     }
 
     companion object {
         private const val TAG = "ExpoYookassaModule"
         private const val REQUEST_CODE_TOKENIZE = 1001
-        private const val DEFAULT_RETURN_PATH = "yookassa"
 
         private fun mask(value: String?): String {
             if (value.isNullOrEmpty()) return "<empty>"
