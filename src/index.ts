@@ -1,5 +1,5 @@
-import ExpoYookassa from './ExpoYookassaModule';
+import ExpoYookassa from "./ExpoYookassaModule";
 export default ExpoYookassa;
 
 // Реэкспортируем все из модуля
-export * from './ExpoYookassaModule';
+export * from "./ExpoYookassaModule";

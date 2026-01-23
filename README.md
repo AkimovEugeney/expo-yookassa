@@ -94,6 +94,25 @@ cd ios && pod install
 implementation 'ru.yoomoney.sdk:kassa-payments:6.4.0'
 ```
 
+#### Схема диплинка для СБП/СберPay
+
+SDK использует ресурс `ym_app_scheme` для возврата в приложение при оплате через СБП/СберPay. 
+В пакете есть config-plugin, который берёт значение из `expo.scheme` и записывает его в `strings.xml`.
+
+Добавьте в `app.json`:
+
+```json
+{
+  "expo": {
+    "scheme": "offlineaichat",
+    "plugins": ["expo-yookassa"]
+  }
+}
+```
+
+После этого `ym_app_scheme` будет установлен в `"offlineaichat"`, и SDK сформирует диплинк
+`offlineaichat://sbp-invoicing`.
+
 ## Использование
 
 ### Инициализация
@@ -158,6 +177,66 @@ async function buySubscription() {
 }
 ```
 
+### Привязка карты (customerId)
+
+Чтобы карта сохранилась и показывалась в списке методов оплаты, передайте `customerId` и включите сохранение:
+
+```typescript
+const result = await ExpoYookassa.startTokenization({
+  clientId: "YOUR_CLIENT_ID",
+  shopId: "YOUR_SHOP_ID",
+  amount: 200,
+  currency: "RUB",
+  title: "Покупка",
+  savePaymentMethod: "ON",
+  customerId: "user@example.com",
+});
+```
+
+На сервере при создании платежа также нужно передать `save_payment_method: true` и тот же `customerId`.
+
+### Токенизация сохраненной карты (CSC, Android)
+
+Для повторного списания с сохраненной карты нужно получить `paymentMethodId` с вашего сервера
+и вызвать метод `startSavedCardTokenization`:
+
+```typescript
+const result = await ExpoYookassa.startSavedCardTokenization({
+  clientId: "YOUR_CLIENT_ID",
+  shopId: "YOUR_SHOP_ID",
+  paymentMethodId: "saved_card_id",
+  amount: 200,
+  currency: "RUB",
+  title: "Повторная покупка",
+  savePaymentMethod: "OFF",
+});
+```
+
+### Подтверждение оплаты (Android)
+
+Единый метод для SBP, SberPay и 3DS:
+
+```typescript
+const result = await ExpoYookassa.startConfirmation({
+  confirmationUrl: "https://3dsurl.com/",
+  paymentMethodType: "BANK_CARD",
+  clientId: "YOUR_CLIENT_ID",
+  shopId: "YOUR_SHOP_ID",
+  testMode: false,
+});
+
+if (result.status === "OK") {
+  // Запросите статус платежа на сервере
+} else if (result.status === "CANCELED") {
+  // Пользователь отменил
+} else {
+  console.log(result.errorCode, result.errorDescription, result.failingUrl);
+}
+```
+
+Для совместимости также доступны:
+`startSbpConfirmation`, `startSberPayConfirmation`, `start3dsConfirmation` — они вызывают общий метод.
+
 #### С авторизацией (работа по ID пользователя)
 
 ```typescript
@@ -220,9 +299,33 @@ import ExpoYookassa from 'expo-yookassa'
 
 async function checkSubscriptionOnStart() {
   // Проверка с запросом на ваш сервер
-  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart(
-    'https://your-server.com'
-  )
+  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart({
+    checkRequest: {
+      url: 'https://your-server.com/subscriptions/check',
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          app_id: 1,
+          device_id: 'device-abc',
+        }),
+      },
+    },
+    paymentsRequest: {
+      url: 'https://your-server.com/payments/{paymentId}',
+      init: {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    },
+    appId: 1,
+    deviceId: 'device-abc',
+    requireStoredIdentity: true,
+  })
 
   if (subscriptionInfo && subscriptionInfo.isActive) {
     console.log('Active subscription found:', subscriptionInfo)
@@ -241,13 +344,35 @@ import ExpoYookassa from 'expo-yookassa'
 
 async function checkSubscriptionOnStart(userId: string) {
   // Проверка с запросом на ваш сервер для конкретного пользователя
-  // Если сервер недоступен, будет использован локальный период подписки
-  // (если прошло менее 7 дней с последней проверки)
-  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart(
-    'https://your-server.com',
+  // Если сервер недоступен, будет использован локальный срок подписки
+  // (до даты expiresAt)
+  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart({
+    checkRequest: {
+      url: 'https://your-server.com/subscriptions/check',
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          app_id: 1,
+          user_id: userId,
+        }),
+      },
+    },
+    paymentsRequest: {
+      url: 'https://your-server.com/payments/{paymentId}',
+      init: {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    },
+    appId: 1,
     userId, // ID авторизованного пользователя
-    7 // gracePeriodDays - максимальное количество дней без проверки сервера
-  )
+    requireStoredIdentity: true,
+  })
 
   if (subscriptionInfo && subscriptionInfo.isActive) {
     console.log('Active subscription found:', subscriptionInfo)
@@ -259,18 +384,41 @@ async function checkSubscriptionOnStart(userId: string) {
 }
 ```
 
-#### С настройкой периода grace period
+#### С настройкой резервного периода без expiresAt
 
 ```typescript
 import ExpoYookassa from 'expo-yookassa'
 
 async function checkSubscriptionOnStart() {
-  // Настройка: локальные данные действительны 14 дней без проверки сервера
-  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart(
-    'https://your-server.com',
-    undefined, // userId
-    14 // gracePeriodDays - 14 дней
-  )
+  // Резервная настройка, если expiresAt недоступен
+  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart({
+    checkRequest: {
+      url: 'https://your-server.com/subscriptions/check',
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          app_id: 1,
+          device_id: 'device-abc',
+        }),
+      },
+    },
+    paymentsRequest: {
+      url: 'https://your-server.com/payments/{paymentId}',
+      init: {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    },
+    appId: 1,
+    deviceId: 'device-abc',
+    gracePeriodDays: 14, // 14 дней без проверки сервера
+    requireStoredIdentity: true,
+  })
 
   if (subscriptionInfo && subscriptionInfo.isActive) {
     // Подписка активна (либо с сервера, либо из локального кеша)
@@ -422,22 +570,80 @@ async function makePayment() {
 
 Запускает процесс обычного платежа.
 
-#### `verifySubscriptionOnStart(serverUrl?: string, userId?: string, gracePeriodDays?: number): Promise<SubscriptionInfo | null>`
+#### С готовыми запросами (например, с HMAC)
+
+```typescript
+import ExpoYookassa from 'expo-yookassa'
+
+async function checkSubscriptionOnStart() {
+  const subscriptionInfo = await ExpoYookassa.verifySubscriptionOnStart({
+    appId: 1,
+    deviceId: 'device-abc',
+    checkRequest: {
+      url: 'https://your-server.com/subscriptions/check',
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Signature': '<hmac>',
+        },
+        body: JSON.stringify({
+          app_id: 1,
+          device_id: 'device-abc',
+          ts: Date.now(),
+        }),
+      },
+    },
+    paymentsRequest: {
+      url: 'https://your-server.com/payments/{paymentId}',
+      init: {
+        method: 'GET',
+        headers: {
+          'X-Signature': '<hmac>',
+        },
+      },
+    },
+    requireStoredIdentity: true,
+  })
+
+  if (subscriptionInfo?.isActive) {
+    console.log('Active subscription found:', subscriptionInfo)
+  } else {
+    console.log('No active subscription')
+  }
+}
+```
+
+#### `verifySubscriptionOnStart(options: { serverUrl?: string; appId: number; userId?: string; deviceId?: string; gracePeriodDays?: number; requireStoredIdentity?: boolean; checkRequest?: { url: string; init?: RequestInit }; paymentsRequest?: { url: string; init?: RequestInit } }): Promise<SubscriptionInfo>`
+
+`SubscriptionInfo` содержит поля:
+- `isActive` — итоговый статус подписки
+- `source` — источник данных (`server`, `local`, `none`)
+- `serverResponse` — исходный ответ сервера, если проверка была через сеть
+
+Перед первой проверкой рекомендуется сохранить идентификаторы пользователя/устройства:
+```ts
+await ExpoYookassa.saveSubscriptionIdentity({
+  userId: 'user-123',
+  deviceId: 'device-abc',
+})
+```
 
 Проверяет наличие активной подписки при запуске приложения. Рекомендуется вызывать при старте приложения.
 
 **Логика работы:**
 
 - Если сервер доступен и подписка активна → обновляет локальные данные
-- Если сервер недоступен → использует локальный `expiresAt` (если прошло менее `gracePeriodDays` дней)
+- Если сервер недоступен → использует локальный `expiresAt` до истечения подписки
 - Если сервер явно говорит что подписки нет → удаляет локальные данные
-- Если прошло более `gracePeriodDays` дней без проверки → требует проверку сервера
 
 **Параметры:**
 
-- `serverUrl` - URL сервера для проверки (опционально)
+- `serverUrl` - URL сервера для проверки (опционально, если переданы `checkRequest`/`paymentsRequest`)
 - `userId` - ID пользователя (опционально)
-- `gracePeriodDays` - Максимальное количество дней без проверки сервера (по умолчанию 7)
+- `gracePeriodDays` - Резервное количество дней без проверки сервера, если `expiresAt` недоступен (по умолчанию 7)
+- `checkRequest` - Полный конфиг запроса проверки подписки
+- `paymentsRequest` - Полный конфиг запроса статуса платежа (можно использовать `{paymentId}`)
 
 #### `checkSubscriptionStatus(subscriptionId?: string, userId?: string): Promise<SubscriptionStatus>`
 
@@ -532,8 +738,8 @@ interface SubscriptionStatus {
    - Если пользователь авторизован, передавайте `userId` в параметрах - данные будут сохраняться с привязкой к пользователю
 
 6. **Работа при недоступности сервера**:
-   - Модуль автоматически использует локально сохраненный период подписки (`expiresAt`)
-   - Локальные данные действительны в течение `gracePeriodDays` (по умолчанию 7 дней) без проверки сервера
+   - Модуль автоматически использует локально сохраненный срок подписки (`expiresAt`) до истечения
+   - `gracePeriodDays` используется только как резерв, если `expiresAt` недоступен
    - Если сервер явно говорит что подписки нет - локальные данные удаляются
    - Для защиты от взлома сервер должен возвращать криптографическую подпись данных
 

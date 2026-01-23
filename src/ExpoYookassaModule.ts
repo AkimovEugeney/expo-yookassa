@@ -1,48 +1,66 @@
-import { EventEmitter, requireNativeModule } from 'expo-modules-core'
+import { EventEmitter, requireNativeModule } from "expo-modules-core";
 
-import { Platform } from 'react-native'
+import { Platform } from "react-native";
 import type {
   ExpoYookassaEventSubscription,
   ExpoYookassaModuleEvents,
   LocalSubscriptionData,
+  ConfirmationParams,
+  ConfirmationResult,
   PaymentError,
+  SbpConfirmationParams,
+  SberPayConfirmationParams,
+  ThreeDsConfirmationParams,
+  SavedCardTokenizationParams,
+  SubscriptionIdentity,
   SubscriptionInfo,
   SubscriptionStatus,
   TokenizationParams,
   TokenizationResult,
-} from './ExpoYookassa.types'
+  VerifySubscriptionOnStartOptions,
+} from "./ExpoYookassa.types";
 
-let SecureStore: typeof import('expo-secure-store');
+let SecureStore: typeof import("expo-secure-store");
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  SecureStore = require('expo-secure-store');
+  SecureStore = require("expo-secure-store");
 } catch (error) {
-  SecureStore = undefined as unknown as typeof import('expo-secure-store');
+  SecureStore = undefined as unknown as typeof import("expo-secure-store");
 }
 
 // Интерфейс нативного модуля
 interface NativeExpoYookassaModule {
   initialize(clientId: string, shopId: string): Promise<void>;
   startTokenization(params: any): Promise<TokenizationResult>;
+  startSavedCardTokenization?(params: any): Promise<TokenizationResult>;
+  startConfirmation?(params: any): Promise<ConfirmationResult>;
 
   // Методы для подписок
   startSubscription?(params: any): Promise<TokenizationResult>;
   cancelSubscription?(subscriptionId: string): Promise<boolean>;
   checkSubscriptionStatus?(subscriptionId: string): Promise<SubscriptionStatus>;
   // iOS специфичные методы
-  confirm3DS?(confirmationUrl: string, paymentMethodType: string): Promise<boolean>;
-  // Android специфичные методы  
+  confirm3DS?(
+    confirmationUrl: string,
+    paymentMethodType: string,
+  ): Promise<boolean>;
+  // Android специфичные методы
   isPaymentMethodAvailable?(methodType: string): Promise<boolean>;
+  startSbpConfirmation?(params: any): Promise<ConfirmationResult>;
+  startSberPayConfirmation?(params: any): Promise<ConfirmationResult>;
+  start3dsConfirmation?(params: any): Promise<ConfirmationResult>;
 }
 
 // Получаем нативный модуль
-const nativeModule = requireNativeModule<NativeExpoYookassaModule>('ExpoYookassa');
+const nativeModule =
+  requireNativeModule<NativeExpoYookassaModule>("ExpoYookassa");
 const emitter = new EventEmitter<ExpoYookassaModuleEvents>(nativeModule as any);
 
 /**
  * Основной класс модуля YooKassa
  */
 class ExpoYookassa {
+  private readonly identityStorageKey = "yookassa_subscription_identity";
   /**
    * Инициализация YooKassa SDK
    * @param clientId - Client ID из личного кабинета YooKassa
@@ -50,9 +68,9 @@ class ExpoYookassa {
    */
   async initialize(clientId: string, shopId: string): Promise<void> {
     if (!clientId || !shopId) {
-      throw new Error('clientId and shopId are required');
+      throw new Error("clientId and shopId are required");
     }
-    
+
     try {
       await nativeModule.initialize(clientId, shopId);
     } catch (error) {
@@ -65,27 +83,80 @@ class ExpoYookassa {
    * @param params - Параметры платежа
    * @returns Результат токенизации
    */
-  async startTokenization(params: TokenizationParams): Promise<TokenizationResult> {
+  async startTokenization(
+    params: TokenizationParams,
+  ): Promise<TokenizationResult> {
     try {
       const result = await nativeModule.startTokenization({
         ...params,
-        currency: params.currency || 'RUB',
-        savePaymentMethod: params.savePaymentMethod || 'OFF',
-        paymentMethodTypes: params.paymentMethodTypes || ['BANK_CARD', 'SBERBANK', 'SBP'],
+        currency: params.currency || "RUB",
+        savePaymentMethod: params.savePaymentMethod || "OFF",
+        paymentMethodTypes: params.paymentMethodTypes || [
+          "BANK_CARD",
+          "SBERBANK",
+          "SBP",
+        ],
         testMode: params.testMode ?? false,
       });
-      
+
+      if (Platform.OS === "android") {
+        // Android SDK does not return paymentMethodId.
+        const { paymentMethodId: _omit, ...rest } =
+          result as TokenizationResult & {
+            paymentMethodId?: string;
+          };
+        return rest;
+      }
+
       return result;
     } catch (error: any) {
       // Нормализуем ошибки
-      if (error.code === 'TOKENIZATION_CANCELED') {
-        throw new Error('Payment was canceled by user');
+      if (error.code === "TOKENIZATION_CANCELED") {
+        throw new Error("Payment was canceled by user");
       }
-      
-      if (error.code === 'TOKENIZATION_FAILED') {
+
+      if (error.code === "TOKENIZATION_FAILED") {
         throw new Error(`Payment failed: ${error.message}`);
       }
-      
+
+      throw error;
+    }
+  }
+
+  /**
+   * Запуск токенизации сохраненной карты (Android)
+   * @param params - Параметры сохраненной карты
+   * @returns Результат токенизации
+   */
+  async startSavedCardTokenization(
+    params: SavedCardTokenizationParams,
+  ): Promise<TokenizationResult> {
+    if (Platform.OS !== "android") {
+      throw new Error("Saved card tokenization is only available on Android");
+    }
+
+    if (!nativeModule.startSavedCardTokenization) {
+      throw new Error(
+        "Saved card tokenization is not supported by the native module",
+      );
+    }
+
+    try {
+      return await nativeModule.startSavedCardTokenization({
+        ...params,
+        currency: params.currency || "RUB",
+        savePaymentMethod: params.savePaymentMethod || "OFF",
+        testMode: params.testMode ?? false,
+      });
+    } catch (error: any) {
+      if (error.code === "TOKENIZATION_CANCELED") {
+        throw new Error("Payment was canceled by user");
+      }
+
+      if (error.code === "TOKENIZATION_FAILED") {
+        throw new Error(`Payment failed: ${error.message}`);
+      }
+
       throw error;
     }
   }
@@ -95,15 +166,18 @@ class ExpoYookassa {
    * @param confirmationUrl - URL для подтверждения
    * @param paymentMethodType - Тип платежного метода
    */
-  async confirm3DS(confirmationUrl: string, paymentMethodType: string): Promise<boolean> {
-    if (Platform.OS !== 'ios') {
-      throw new Error('3DS confirmation is only available on iOS');
+  async confirm3DS(
+    confirmationUrl: string,
+    paymentMethodType: string,
+  ): Promise<boolean> {
+    if (Platform.OS !== "ios") {
+      throw new Error("3DS confirmation is only available on iOS");
     }
-    
+
     if (!nativeModule.confirm3DS) {
-      throw new Error('3DS confirmation is not supported by the native module');
+      throw new Error("3DS confirmation is not supported by the native module");
     }
-    
+
     try {
       return await nativeModule.confirm3DS(confirmationUrl, paymentMethodType);
     } catch (error) {
@@ -112,18 +186,101 @@ class ExpoYookassa {
   }
 
   /**
+   * Подтверждение оплаты через СБП (только Android)
+   * @param params - Параметры подтверждения
+   */
+  async startSbpConfirmation(
+    params: SbpConfirmationParams,
+  ): Promise<ConfirmationResult> {
+    if (Platform.OS !== "android") {
+      throw new Error("SBP confirmation is only available on Android");
+    }
+
+    return this.startConfirmation({
+      ...params,
+      paymentMethodType: params.paymentMethodType || "SBP",
+      testMode: params.testMode ?? false,
+    });
+  }
+
+  /**
+   * Подтверждение оплаты через SberPay (только Android)
+   * @param params - Параметры подтверждения
+   */
+  async startSberPayConfirmation(
+    params: SberPayConfirmationParams,
+  ): Promise<ConfirmationResult> {
+    if (Platform.OS !== "android") {
+      throw new Error("SberPay confirmation is only available on Android");
+    }
+
+    return this.startConfirmation({
+      ...params,
+      paymentMethodType: params.paymentMethodType || "SBERBANK",
+      testMode: params.testMode ?? false,
+    });
+  }
+
+  /**
+   * Подтверждение 3DS (только Android)
+   * @param params - Параметры подтверждения
+   */
+  async start3dsConfirmation(
+    params: ThreeDsConfirmationParams,
+  ): Promise<ConfirmationResult> {
+    if (Platform.OS !== "android") {
+      throw new Error("3DS confirmation is only available on Android");
+    }
+
+    return this.startConfirmation({
+      ...params,
+      paymentMethodType: params.paymentMethodType || "BANK_CARD",
+      testMode: params.testMode ?? false,
+    });
+  }
+
+  /**
+   * Универсальное подтверждение оплаты (Android)
+   * @param params - Параметры подтверждения
+   */
+  async startConfirmation(
+    params: ConfirmationParams,
+  ): Promise<ConfirmationResult> {
+    if (Platform.OS !== "android") {
+      throw new Error("Confirmation is only available on Android");
+    }
+
+    if (!nativeModule.startConfirmation) {
+      throw new Error("Confirmation is not supported by the native module");
+    }
+
+    if (!params.confirmationUrl) {
+      throw new Error("confirmationUrl is required");
+    }
+
+    if (!params.paymentMethodType) {
+      throw new Error("paymentMethodType is required");
+    }
+
+    return await nativeModule.startConfirmation({
+      ...params,
+      testMode: params.testMode ?? false,
+    });
+  }
+
+  /**
    * Проверка доступности платежного метода (только Android)
    * @param methodType - Тип платежного метода
    */
   async isPaymentMethodAvailable(methodType: string): Promise<boolean> {
-    if (Platform.OS !== 'android') {
-      throw new Error('This method is only available on Android');
+    if (Platform.OS !== "android") {
+      throw new Error("This method is only available on Android");
     }
-    
+
     if (!nativeModule.isPaymentMethodAvailable) {
       return Promise.resolve(true); // По умолчанию доступен
     }
-    
+
     return await nativeModule.isPaymentMethodAvailable(methodType);
   }
 
@@ -132,57 +289,81 @@ class ExpoYookassa {
    * @param params - Параметры подписки
    * @returns Результат токенизации с информацией о подписке
    */
-  async startSubscription(params: TokenizationParams & { subscriptionId: string; userId?: string }): Promise<TokenizationResult> {
+  async startSubscription(
+    params: TokenizationParams & { subscriptionId: string; userId?: string },
+  ): Promise<TokenizationResult> {
     try {
-      const result = await nativeModule.startSubscription?.({
-        ...params,
-        currency: params.currency || 'RUB',
-        savePaymentMethod: params.savePaymentMethod || 'ON', // Для подписок обычно ON
-        isRecurring: true,
-        testMode: params.testMode ?? false,
-      }) || await this.startTokenization({
-        ...params,
-        isRecurring: true,
-        testMode: params.testMode ?? false,
-      });
-      
+      const result =
+        (await nativeModule.startSubscription?.({
+          ...params,
+          currency: params.currency || "RUB",
+          savePaymentMethod: params.savePaymentMethod || "ON", // Для подписок обычно ON
+          isRecurring: true,
+          testMode: params.testMode ?? false,
+        })) ||
+        (await this.startTokenization({
+          ...params,
+          isRecurring: true,
+          testMode: params.testMode ?? false,
+        }));
+
       // Сохраняем ID подписки в SecureStore
       // expiresAt будет сохранен после успешного ответа от сервера
       if (result.subscriptionId || params.subscriptionId) {
         const subscriptionId = result.subscriptionId || params.subscriptionId;
-        
+
         // Если есть userId, сохраняем с привязкой к пользователю
         if (params.userId) {
-          await SecureStore.setItemAsync(`yookassa_subscription_id_${params.userId}`, subscriptionId);
+          await SecureStore.setItemAsync(
+            `yookassa_subscription_id_${params.userId}`,
+            subscriptionId,
+          );
         } else {
           // Если нет авторизации, сохраняем просто по ID подписки
-          await SecureStore.setItemAsync('yookassa_subscription_id', subscriptionId);
+          await SecureStore.setItemAsync(
+            "yookassa_subscription_id",
+            subscriptionId,
+          );
         }
       }
-      
+
       // Сохраняем payment id если есть
       if (result.paymentId) {
         if (params.userId) {
-          await SecureStore.setItemAsync(`yookassa_payment_id_${params.userId}`, result.paymentId);
+          await SecureStore.setItemAsync(
+            `yookassa_payment_id_${params.userId}`,
+            result.paymentId,
+          );
         } else {
-          await SecureStore.setItemAsync('yookassa_payment_id', result.paymentId);
+          await SecureStore.setItemAsync(
+            "yookassa_payment_id",
+            result.paymentId,
+          );
         }
       }
-      
+
       return result;
     } catch (error: any) {
-      throw new Error(`Subscription purchase failed: ${error.message || error}`);
+      throw new Error(
+        `Subscription purchase failed: ${error.message || error}`,
+      );
     }
   }
 
   /**
    * Сохранение локальных данных подписки
    * @param data - Данные подписки для сохранения
-   * @param userId - ID пользователя (опционально)
+   * @param identityKey - ID пользователя или устройства (опционально)
    */
-  private async saveLocalSubscriptionData(data: LocalSubscriptionData, userId?: string): Promise<void> {
+  private async saveLocalSubscriptionData(
+    data: LocalSubscriptionData,
+    identityKey?: string,
+  ): Promise<void> {
     try {
-      const key = userId ? `yookassa_subscription_data_${userId}` : 'yookassa_subscription_data';
+      const key = this.buildStorageKey(
+        "yookassa_subscription_data",
+        identityKey,
+      );
       await SecureStore.setItemAsync(key, JSON.stringify(data));
     } catch (error) {
       throw new Error(`Failed to save local subscription data: ${error}`);
@@ -191,15 +372,49 @@ class ExpoYookassa {
 
   /**
    * Получение локальных данных подписки
-   * @param userId - ID пользователя (опционально)
+   * @param identityKey - ID пользователя или устройства (опционально)
    * @returns Локальные данные подписки или null
    */
-  private async getLocalSubscriptionData(userId?: string): Promise<LocalSubscriptionData | null> {
+  private async getLocalSubscriptionData(
+    identityKey?: string,
+  ): Promise<LocalSubscriptionData | null> {
     try {
-      const key = userId ? `yookassa_subscription_data_${userId}` : 'yookassa_subscription_data';
+      const key = this.buildStorageKey(
+        "yookassa_subscription_data",
+        identityKey,
+      );
       const data = await SecureStore.getItemAsync(key);
       if (!data) return null;
       return JSON.parse(data) as LocalSubscriptionData;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Сохранение идентификатора пользователя/устройства
+   */
+  async saveSubscriptionIdentity(
+    identity: SubscriptionIdentity,
+  ): Promise<void> {
+    try {
+      await SecureStore.setItemAsync(
+        this.identityStorageKey,
+        JSON.stringify(identity),
+      );
+    } catch (error) {
+      throw new Error(`Failed to save subscription identity: ${error}`);
+    }
+  }
+
+  /**
+   * Получение сохраненного идентификатора пользователя/устройства
+   */
+  async getSubscriptionIdentity(): Promise<SubscriptionIdentity | null> {
+    try {
+      const raw = await SecureStore.getItemAsync(this.identityStorageKey);
+      if (!raw) return null;
+      return JSON.parse(raw) as SubscriptionIdentity;
     } catch (error) {
       return null;
     }
@@ -214,30 +429,33 @@ class ExpoYookassa {
    * @param serverSignature - Подпись данных от сервера для защиты от взлома (опционально)
    */
   async saveSubscriptionId(
-    subscriptionId: string, 
-    paymentId?: string, 
+    subscriptionId: string,
+    paymentId?: string,
     userId?: string,
     expiresAt?: number,
-    serverSignature?: string
+    serverSignature?: string,
   ): Promise<void> {
     try {
-      const key = userId ? `yookassa_subscription_id_${userId}` : 'yookassa_subscription_id';
+      const key = this.buildStorageKey("yookassa_subscription_id", userId);
       await SecureStore.setItemAsync(key, subscriptionId);
-      
+
       if (paymentId) {
-        const paymentKey = userId ? `yookassa_payment_id_${userId}` : 'yookassa_payment_id';
+        const paymentKey = this.buildStorageKey("yookassa_payment_id", userId);
         await SecureStore.setItemAsync(paymentKey, paymentId);
       }
 
       // Сохраняем локальные данные подписки
       if (expiresAt) {
-        await this.saveLocalSubscriptionData({
-          subscriptionId,
-          expiresAt,
-          lastServerCheck: Date.now(),
-          serverSignature,
-          gracePeriodDays: 7, // По умолчанию 7 дней без проверки сервера
-        }, userId);
+        await this.saveLocalSubscriptionData(
+          {
+            subscriptionId,
+            expiresAt,
+            lastServerCheck: Date.now(),
+            serverSignature,
+            gracePeriodDays: 7, // Резервный период, если expiresAt неизвестен
+          },
+          userId,
+        );
       }
     } catch (error) {
       throw new Error(`Failed to save subscription ID: ${error}`);
@@ -251,7 +469,7 @@ class ExpoYookassa {
    */
   async getSubscriptionId(userId?: string): Promise<string | null> {
     try {
-      const key = userId ? `yookassa_subscription_id_${userId}` : 'yookassa_subscription_id';
+      const key = this.buildStorageKey("yookassa_subscription_id", userId);
       return await SecureStore.getItemAsync(key);
     } catch (error) {
       return null;
@@ -265,7 +483,7 @@ class ExpoYookassa {
    */
   async getPaymentId(userId?: string): Promise<string | null> {
     try {
-      const key = userId ? `yookassa_payment_id_${userId}` : 'yookassa_payment_id';
+      const key = this.buildStorageKey("yookassa_payment_id", userId);
       return await SecureStore.getItemAsync(key);
     } catch (error) {
       return null;
@@ -274,21 +492,44 @@ class ExpoYookassa {
 
   /**
    * Удаление сохраненных данных подписки из SecureStore
-   * @param userId - ID пользователя (опционально, если пользователь авторизован)
+   * @param identityKey - ID пользователя или устройства (опционально)
    */
-  async clearSubscriptionData(userId?: string): Promise<void> {
+  async clearSubscriptionData(identityKey?: string): Promise<void> {
     try {
-      if (userId) {
-        await SecureStore.deleteItemAsync(`yookassa_subscription_id_${userId}`);
-        await SecureStore.deleteItemAsync(`yookassa_payment_id_${userId}`);
-        await SecureStore.deleteItemAsync(`yookassa_subscription_data_${userId}`);
-      } else {
-        await SecureStore.deleteItemAsync('yookassa_subscription_id');
-        await SecureStore.deleteItemAsync('yookassa_payment_id');
-        await SecureStore.deleteItemAsync('yookassa_subscription_data');
-      }
+      await SecureStore.deleteItemAsync(
+        this.buildStorageKey("yookassa_subscription_id", identityKey),
+      );
+      await SecureStore.deleteItemAsync(
+        this.buildStorageKey("yookassa_payment_id", identityKey),
+      );
+      await SecureStore.deleteItemAsync(
+        this.buildStorageKey("yookassa_subscription_data", identityKey),
+      );
     } catch (error) {
       // Игнорируем ошибки при удалении
+    }
+  }
+
+  private async clearPaymentId(identityKey?: string): Promise<void> {
+    try {
+      await SecureStore.deleteItemAsync(
+        this.buildStorageKey("yookassa_payment_id", identityKey),
+      );
+    } catch (error) {
+      // Игнорируем ошибки при удалении
+    }
+  }
+
+  private async getPaymentIdForIdentity(
+    identityKey?: string,
+  ): Promise<string | null> {
+    try {
+      if (!identityKey) return null;
+      return await SecureStore.getItemAsync(
+        this.buildStorageKey("yookassa_payment_id", identityKey),
+      );
+    } catch (error) {
+      return null;
     }
   }
 
@@ -298,10 +539,13 @@ class ExpoYookassa {
    * @param userId - ID пользователя (опционально, если пользователь авторизован)
    * @returns Статус подписки
    */
-  async checkSubscriptionStatus(subscriptionId?: string, userId?: string): Promise<SubscriptionStatus> {
+  async checkSubscriptionStatus(
+    subscriptionId?: string,
+    userId?: string,
+  ): Promise<SubscriptionStatus> {
     try {
-      const id = subscriptionId || await this.getSubscriptionId(userId);
-      
+      const id = subscriptionId || (await this.getSubscriptionId(userId));
+
       if (!id) {
         return { isActive: false };
       }
@@ -327,12 +571,15 @@ class ExpoYookassa {
    * @param userId - ID пользователя (опционально, если пользователь авторизован)
    * @returns Успешность операции
    */
-  async cancelSubscription(subscriptionId?: string, userId?: string): Promise<boolean> {
+  async cancelSubscription(
+    subscriptionId?: string,
+    userId?: string,
+  ): Promise<boolean> {
     try {
-      const id = subscriptionId || await this.getSubscriptionId(userId);
-      
+      const id = subscriptionId || (await this.getSubscriptionId(userId));
+
       if (!id) {
-        throw new Error('Subscription ID not found');
+        throw new Error("Subscription ID not found");
       }
 
       // Если есть нативный метод, используем его
@@ -351,121 +598,299 @@ class ExpoYookassa {
   /**
    * Проверка наличия активной подписки при запуске приложения
    * Рекомендуется вызывать при старте приложения
-   * 
+   *
    * Логика работы:
    * 1. Если сервер доступен и говорит что подписка активна - обновляем локальные данные
-   * 2. Если сервер недоступен - используем локальный expiresAt (если прошло менее gracePeriodDays)
+   * 2. Если сервер недоступен - используем локальный expiresAt до истечения подписки
    * 3. Если сервер явно говорит что подписки нет - удаляем локальные данные
-   * 
-   * @param serverUrl - URL вашего сервера для проверки статуса (опционально)
-   * @param userId - ID пользователя (опционально, если пользователь авторизован)
-   * @param gracePeriodDays - Максимальное количество дней без проверки сервера (по умолчанию 7)
+   *
+   * @param options - Параметры проверки подписки
    * @returns Информация о подписке
    */
   async verifySubscriptionOnStart(
-    serverUrl?: string, 
-    userId?: string,
-    gracePeriodDays: number = 7
-  ): Promise<SubscriptionInfo | null> {
+    options: VerifySubscriptionOnStartOptions,
+  ): Promise<SubscriptionInfo> {
     try {
-      const subscriptionId = await this.getSubscriptionId(userId);
-      
-      if (!subscriptionId) {
-        return null;
+      const {
+        serverUrl,
+        appId,
+        userId,
+        deviceId,
+        gracePeriodDays = 7,
+        requireStoredIdentity = true,
+        checkRequest,
+        paymentsRequest,
+      } = options;
+
+      const storedIdentity = await this.getSubscriptionIdentity();
+      const hasStoredIdentity =
+        !!storedIdentity?.userId || !!storedIdentity?.deviceId;
+      if (requireStoredIdentity && !hasStoredIdentity) {
+        return { isActive: false, source: "none" };
       }
 
-      // Получаем локальные данные подписки
-      const localData = await this.getLocalSubscriptionData(userId);
-      const now = Date.now();
+      const identityKey =
+        userId ||
+        deviceId ||
+        storedIdentity?.userId ||
+        storedIdentity?.deviceId;
+      if (!identityKey) {
+        return { isActive: false, source: "none" };
+      }
 
-      // Если указан URL сервера, пытаемся проверить на сервере
-      if (serverUrl) {
+      const localData = await this.getLocalSubscriptionData(identityKey);
+      const now = Date.now();
+      const storedPaymentId = await this.getPaymentIdForIdentity(identityKey);
+
+      if (serverUrl || checkRequest || paymentsRequest) {
         try {
-          const requestBody: any = { subscriptionId };
-          if (userId) {
-            requestBody.userId = userId;
+          const fetchWithTimeout = async (
+            url: string,
+            options: RequestInit,
+          ): Promise<Response> => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            try {
+              return await fetch(url, {
+                ...options,
+                signal: controller.signal,
+              });
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          };
+
+          const resolvePaymentUrl = (urlTemplate: string): string => {
+            if (!storedPaymentId) {
+              return urlTemplate;
+            }
+
+            if (urlTemplate.includes("{paymentId}")) {
+              return urlTemplate.replace(
+                "{paymentId}",
+                encodeURIComponent(storedPaymentId),
+              );
+            }
+
+            return urlTemplate;
+          };
+
+          if (storedPaymentId && (paymentsRequest?.url || serverUrl)) {
+            const paymentRequest = paymentsRequest?.url
+              ? {
+                  url: resolvePaymentUrl(paymentsRequest.url),
+                  init: paymentsRequest.init,
+                }
+              : {
+                  url: `${serverUrl}/payments/${storedPaymentId}`,
+                  init: {
+                    method: "GET",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                  },
+                };
+
+            const response = await fetchWithTimeout(
+              paymentRequest.url,
+              paymentRequest.init || {},
+            );
+
+            if (response.ok) {
+              const data = await response.json();
+              const status = data?.status as string | undefined;
+
+              if (status === "pending") {
+                return {
+                  isActive: false,
+                  paymentStatus: "pending",
+                  paymentId: storedPaymentId,
+                  source: "server",
+                  serverResponse: data,
+                };
+              }
+
+              if (status === "canceled") {
+                await this.clearPaymentId(identityKey);
+                await this.clearSubscriptionData(identityKey);
+                return {
+                  isActive: false,
+                  paymentStatus: "canceled",
+                  source: "server",
+                  serverResponse: data,
+                };
+              }
+
+              if (status === "succeeded") {
+                const subscriptionId = data?.subscription_id
+                  ? String(data.subscription_id)
+                  : undefined;
+                const expiresAt = this.parseExpiresAt(data?.expires_at);
+                const serverSignature =
+                  typeof data?.server_signature === "string"
+                    ? data.server_signature
+                    : undefined;
+                const recoveryCode =
+                  typeof data?.recovery_code === "string"
+                    ? data.recovery_code
+                    : undefined;
+
+                await this.clearPaymentId(identityKey);
+
+                if (subscriptionId) {
+                  await SecureStore.setItemAsync(
+                    this.buildStorageKey(
+                      "yookassa_subscription_id",
+                      identityKey,
+                    ),
+                    subscriptionId,
+                  );
+                }
+
+                if (expiresAt) {
+                  await this.saveLocalSubscriptionData(
+                    {
+                      subscriptionId,
+                      expiresAt,
+                      lastServerCheck: now,
+                      serverSignature,
+                      recoveryCode,
+                      gracePeriodDays,
+                    },
+                    identityKey,
+                  );
+                }
+
+                return {
+                  subscriptionId,
+                  paymentId: storedPaymentId,
+                  paymentStatus: "succeeded",
+                  recoveryCode,
+                  isActive: !!subscriptionId && !!expiresAt,
+                  expiresAt,
+                  autoRenewalEnabled: true,
+                  lastServerCheck: now,
+                  serverSignature,
+                  source: "server",
+                  serverResponse: data,
+                };
+              }
+            }
           }
 
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 секунд таймаут
+          let checkRequestConfig = checkRequest;
+          if (!checkRequestConfig && serverUrl) {
+            const requestBody: any = { app_id: appId };
+            if (userId || storedIdentity?.userId) {
+              requestBody.user_id = userId || storedIdentity?.userId;
+            }
+            if (deviceId || storedIdentity?.deviceId) {
+              requestBody.device_id = deviceId || storedIdentity?.deviceId;
+            }
 
-          const response = await fetch(`${serverUrl}/api/subscription/status`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          });
-          
-          clearTimeout(timeoutId);
+            checkRequestConfig = {
+              url: `${serverUrl}/subscriptions/check`,
+              init: {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(requestBody),
+              },
+            };
+          }
+
+          if (!checkRequestConfig) {
+            throw new Error("Subscription check request configuration is missing");
+          }
+
+          const response = await fetchWithTimeout(
+            checkRequestConfig.url,
+            checkRequestConfig.init || {},
+          );
 
           if (response.ok) {
             const data = await response.json();
-            
-            // Если сервер явно говорит что подписки нет
-            if (data.isActive === false || data.subscriptionNotFound === true) {
-              // Удаляем локальные данные
-              await this.clearSubscriptionData(userId);
-              return null;
+
+            if (data.active === false) {
+              await this.clearSubscriptionData(identityKey);
+              return {
+                isActive: false,
+                source: "server",
+                serverResponse: data,
+              };
             }
 
-            // Если подписка активна - обновляем локальные данные
-            if (data.isActive && data.expiresAt) {
+            if (data.active === true && data.subscription) {
+              const subscriptionId =
+                data.subscription.id !== undefined
+                  ? String(data.subscription.id)
+                  : undefined;
+              const expiresAt = this.parseExpiresAt(
+                data.subscription.expires_at,
+              );
+
               const subscriptionInfo: SubscriptionInfo = {
                 subscriptionId,
-                paymentId: data.paymentId || await this.getPaymentId(userId) || '',
                 isActive: true,
-                expiresAt: data.expiresAt,
-                autoRenewalEnabled: data.autoRenewalEnabled !== false,
+                expiresAt,
+                autoRenewalEnabled: true,
                 lastServerCheck: now,
-                serverSignature: data.signature, // Подпись от сервера для защиты
+                source: "server",
+                serverResponse: data,
               };
 
-              // Сохраняем обновленные локальные данные
-              await this.saveLocalSubscriptionData({
-                subscriptionId,
-                expiresAt: data.expiresAt,
-                lastServerCheck: now,
-                serverSignature: data.signature,
-                gracePeriodDays,
-              }, userId);
+              if (expiresAt) {
+                await this.saveLocalSubscriptionData(
+                  {
+                    subscriptionId,
+                    expiresAt,
+                    lastServerCheck: now,
+                    gracePeriodDays,
+                  },
+                  identityKey,
+                );
+              }
 
               return subscriptionInfo;
             }
+
+            return {
+              isActive: false,
+              source: "server",
+              serverResponse: data,
+            };
           }
+
+          return {
+            isActive: false,
+            source: "server",
+          };
         } catch (error: any) {
           // Сервер недоступен или ошибка сети
-          console.warn('Server unavailable, using local subscription data:', error.message);
-          
+          console.warn(
+            "Server unavailable, using local subscription data:",
+            error.message,
+          );
+
           // Используем локальные данные если они есть
           if (localData) {
-            const daysSinceLastCheck = (now - localData.lastServerCheck) / (1000 * 60 * 60 * 24);
-            const gracePeriod = localData.gracePeriodDays || gracePeriodDays;
-
-            // Проверяем что не прошло слишком много времени с последней проверки
-            if (daysSinceLastCheck <= gracePeriod) {
-              // Проверяем что подписка еще не истекла
-              if (localData.expiresAt > now) {
-                return {
-                  subscriptionId: localData.subscriptionId,
-                  paymentId: await this.getPaymentId(userId) || '',
-                  isActive: true,
-                  expiresAt: localData.expiresAt,
-                  autoRenewalEnabled: true, // По умолчанию true, если нет данных
-                  lastServerCheck: localData.lastServerCheck,
-                  serverSignature: localData.serverSignature,
-                };
-              } else {
-                // Подписка истекла локально
-                await this.clearSubscriptionData(userId);
-                return null;
-              }
+            // Используем локальный срок подписки без ограничения 7 днями
+            if (localData.expiresAt > now) {
+              return {
+                subscriptionId: localData.subscriptionId,
+                isActive: true,
+                expiresAt: localData.expiresAt,
+                autoRenewalEnabled: true, // По умолчанию true, если нет данных
+                lastServerCheck: localData.lastServerCheck,
+                serverSignature: localData.serverSignature,
+                recoveryCode: localData.recoveryCode,
+                source: "local",
+              };
             } else {
-              // Прошло слишком много времени без проверки - требуем проверку сервера
-              console.warn(`Grace period exceeded (${daysSinceLastCheck.toFixed(1)} days). Server check required.`);
-              // Не удаляем данные, но возвращаем null - требуется проверка сервера
-              return null;
+              // Подписка истекла локально
+              await this.clearSubscriptionData(identityKey);
+              return { isActive: false, source: "local" };
             }
           }
         }
@@ -476,47 +901,64 @@ class ExpoYookassa {
         if (localData.expiresAt > now) {
           return {
             subscriptionId: localData.subscriptionId,
-            paymentId: await this.getPaymentId(userId) || '',
             isActive: true,
             expiresAt: localData.expiresAt,
             autoRenewalEnabled: true,
             lastServerCheck: localData.lastServerCheck,
             serverSignature: localData.serverSignature,
+            recoveryCode: localData.recoveryCode,
+            source: "local",
           };
         } else {
           // Подписка истекла
-          await this.clearSubscriptionData(userId);
-          return null;
+          await this.clearSubscriptionData(identityKey);
+          return { isActive: false, source: "local" };
         }
       }
 
       // Нет локальных данных
-      return null;
+      return { isActive: false, source: "none" };
     } catch (error) {
-      console.error('Failed to verify subscription:', error);
-      return null;
+      console.error("Failed to verify subscription:", error);
+      return { isActive: false, source: "none" };
     }
   }
 
   /**
    * Событие успешной токенизации
    */
-  addOnTokenizationSuccessListener(listener: (result: TokenizationResult) => void): ExpoYookassaEventSubscription {
-    return emitter.addListener('onTokenizationSuccess', listener);
+  addOnTokenizationSuccessListener(
+    listener: (result: TokenizationResult) => void,
+  ): ExpoYookassaEventSubscription {
+    return emitter.addListener("onTokenizationSuccess", listener);
   }
 
   /**
    * Событие ошибки токенизации
    */
-  addOnTokenizationErrorListener(listener: (error: PaymentError) => void): ExpoYookassaEventSubscription {
-    return emitter.addListener('onTokenizationError', listener);
+  addOnTokenizationErrorListener(
+    listener: (error: PaymentError) => void,
+  ): ExpoYookassaEventSubscription {
+    return emitter.addListener("onTokenizationError", listener);
   }
 
   /**
    * Событие отмены платежа
    */
-  addOnTokenizationCancelListener(listener: () => void): ExpoYookassaEventSubscription {
-    return emitter.addListener('onTokenizationCancel', listener);
+  addOnTokenizationCancelListener(
+    listener: () => void,
+  ): ExpoYookassaEventSubscription {
+    return emitter.addListener("onTokenizationCancel", listener);
+  }
+
+  private buildStorageKey(base: string, identityKey?: string): string {
+    return identityKey ? `${base}_${identityKey}` : base;
+  }
+
+  private parseExpiresAt(value?: string): number | undefined {
+    if (!value) return undefined;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? undefined : parsed;
   }
 }
 

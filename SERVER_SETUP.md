@@ -316,7 +316,7 @@ CREATE TABLE subscriptions (
 
 1. **Сервер должен возвращать подпись (`signature`)** при проверке статуса подписки
 2. **Подпись создается на основе `subscriptionId` и `expiresAt`** с использованием секретного ключа
-3. **Локальные данные действительны только в течение `gracePeriodDays`** (по умолчанию 7 дней) без проверки сервера
+3. **Локальные данные действительны до `expiresAt`** без проверки сервера ( `gracePeriodDays` используется только если `expiresAt` недоступен )
 4. **Если сервер явно говорит что подписки нет** - локальные данные удаляются
 
 **Пример создания подписи на сервере:**
@@ -344,4 +344,3 @@ function createSignature(subscriptionId, expiresAt) {
 - [Документация YooKassa API](https://yookassa.ru/developers/api)
 - [Рекуррентные платежи](https://yookassa.ru/developers/using-api/recurring-payments)
 - [Webhook уведомления](https://yookassa.ru/developers/using-api/webhooks)
-
