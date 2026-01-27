@@ -638,6 +638,18 @@ class ExpoYookassa {
         return { isActive: false, source: "none" };
       }
 
+      const identityKeysToClear = Array.from(
+        new Set(
+          [userId, deviceId, storedIdentity?.userId, storedIdentity?.deviceId]
+            .filter(Boolean) as string[],
+        ),
+      );
+      const clearAllSubscriptionData = async (): Promise<void> => {
+        for (const key of identityKeysToClear) {
+          await this.clearSubscriptionData(key);
+        }
+      };
+
       const localData = await this.getLocalSubscriptionData(identityKey);
       const now = Date.now();
       const storedPaymentId = await this.getPaymentIdForIdentity(identityKey);
@@ -674,6 +686,114 @@ class ExpoYookassa {
 
             return urlTemplate;
           };
+
+          let checkRequestConfig = checkRequest;
+          if (!checkRequestConfig && serverUrl) {
+            const requestBody: any = { app_id: appId };
+            if (userId || storedIdentity?.userId) {
+              requestBody.user_id = userId || storedIdentity?.userId;
+            }
+            if (deviceId || storedIdentity?.deviceId) {
+              requestBody.device_id = deviceId || storedIdentity?.deviceId;
+            }
+
+            checkRequestConfig = {
+              url: `${serverUrl}/subscriptions/check`,
+              init: {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(requestBody),
+              },
+            };
+          }
+
+          if (checkRequestConfig) {
+            const response = await fetchWithTimeout(
+              checkRequestConfig.url,
+              checkRequestConfig.init || {},
+            );
+
+            if (response.ok) {
+              const data = await response.json();
+
+            if (data.active === false) {
+              await clearAllSubscriptionData();
+              return {
+                isActive: false,
+                source: "server",
+                serverResponse: data,
+              };
+            }
+
+              if (data.active === true && data.subscription) {
+                const subscriptionId =
+                  data.subscription.id !== undefined
+                    ? String(data.subscription.id)
+                    : undefined;
+                const expiresAt = this.parseExpiresAt(
+                  data.subscription.expires_at,
+                );
+
+                const subscriptionInfo: SubscriptionInfo = {
+                  subscriptionId,
+                  isActive: true,
+                  expiresAt,
+                  autoRenewalEnabled: true,
+                  lastServerCheck: now,
+                  source: "server",
+                  serverResponse: data,
+                };
+
+                if (expiresAt) {
+                  await this.saveLocalSubscriptionData(
+                    {
+                      subscriptionId,
+                      expiresAt,
+                      lastServerCheck: now,
+                      gracePeriodDays,
+                    },
+                    identityKey,
+                  );
+                }
+
+                return subscriptionInfo;
+              }
+
+              return {
+                isActive: false,
+                source: "server",
+                serverResponse: data,
+              };
+            }
+
+            if (response.status === 400 || response.status === 403) {
+              let data: any = undefined;
+              try {
+                data = await response.json();
+              } catch (error) {
+                // ignore invalid JSON
+              }
+
+              await clearAllSubscriptionData();
+
+              return {
+                isActive: false,
+                source: "server",
+                serverResponse: data,
+              };
+            }
+
+            return {
+              isActive: false,
+              source: "server",
+            };
+          }
+
+          if (!checkRequestConfig) {
+            throw new Error("Subscription check request configuration is missing");
+          }
 
           if (storedPaymentId && (paymentsRequest?.url || serverUrl)) {
             const paymentRequest = paymentsRequest?.url
@@ -712,7 +832,7 @@ class ExpoYookassa {
 
               if (status === "canceled") {
                 await this.clearPaymentId(identityKey);
-                await this.clearSubscriptionData(identityKey);
+                await clearAllSubscriptionData();
                 return {
                   isActive: false,
                   paymentStatus: "canceled",
@@ -776,90 +896,6 @@ class ExpoYookassa {
                 };
               }
             }
-          }
-
-          let checkRequestConfig = checkRequest;
-          if (!checkRequestConfig && serverUrl) {
-            const requestBody: any = { app_id: appId };
-            if (userId || storedIdentity?.userId) {
-              requestBody.user_id = userId || storedIdentity?.userId;
-            }
-            if (deviceId || storedIdentity?.deviceId) {
-              requestBody.device_id = deviceId || storedIdentity?.deviceId;
-            }
-
-            checkRequestConfig = {
-              url: `${serverUrl}/subscriptions/check`,
-              init: {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(requestBody),
-              },
-            };
-          }
-
-          if (!checkRequestConfig) {
-            throw new Error("Subscription check request configuration is missing");
-          }
-
-          const response = await fetchWithTimeout(
-            checkRequestConfig.url,
-            checkRequestConfig.init || {},
-          );
-
-          if (response.ok) {
-            const data = await response.json();
-
-            if (data.active === false) {
-              await this.clearSubscriptionData(identityKey);
-              return {
-                isActive: false,
-                source: "server",
-                serverResponse: data,
-              };
-            }
-
-            if (data.active === true && data.subscription) {
-              const subscriptionId =
-                data.subscription.id !== undefined
-                  ? String(data.subscription.id)
-                  : undefined;
-              const expiresAt = this.parseExpiresAt(
-                data.subscription.expires_at,
-              );
-
-              const subscriptionInfo: SubscriptionInfo = {
-                subscriptionId,
-                isActive: true,
-                expiresAt,
-                autoRenewalEnabled: true,
-                lastServerCheck: now,
-                source: "server",
-                serverResponse: data,
-              };
-
-              if (expiresAt) {
-                await this.saveLocalSubscriptionData(
-                  {
-                    subscriptionId,
-                    expiresAt,
-                    lastServerCheck: now,
-                    gracePeriodDays,
-                  },
-                  identityKey,
-                );
-              }
-
-              return subscriptionInfo;
-            }
-
-            return {
-              isActive: false,
-              source: "server",
-              serverResponse: data,
-            };
           }
 
           return {
